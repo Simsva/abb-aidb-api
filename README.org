@@ -1,0 +1,76 @@
+#+TITLE: AIDB API
+#+AUTHOR: Simon Ericsson
+#+DESCRIPTION: Documentation for the AIDB API
+
+An API for accessing data collected using [[https://github.com/Simsva/esp8266-data-collection-2][esp8266-data-collection-2]]
+
+* Basic information
+** *API arguments*:
+Arguments provided in the API URL separated by slashes.
+
+/Example/: *.../get_data/arg1/arg2*, where "arg1" and "arg2" are API arguments.
+
+** *Query arguments*
+Arguments provided using the query string at the end of the URL.
+
+/Example/: *.../get_devices?fields=mac,name&id=3*, where "fields = mac,name" and "id = 3" are query arguments.
+
+* Usage
+*Base URL*: [[https://simsva.se/api/aidb/]] (Or another URL pointed to the same PHP script provided in the repository)
+Methods are appended at the end of the *Base URL*, almost like the first "API argument".
+
+** Methods
+*** get_data/
+Gets collected data.
+
+Returns a list of objects.
+
+**** *API arguments*:
+ 1. Data type to return, valid values are: /volume/, /light/, /co2/, /temp/, /humidity/
+
+    If left empty all data will be returned, *this is strongly advised against, as it returns more data than necessary in most cases*. It is also unfiltered, i.e. it includes null values.
+
+**** *Query arguments*:
+ - *id*
+
+   Only returns data collected by the device with the specified id.
+
+ - *fields*
+
+   Comma separated list of which fields to return.
+
+   /Example/: *.../get_data?fields=time,temp* only returns the time and temp fields, but not the id field.
+*** get_devices/
+Gets information about one collector device.
+
+Returns a list of objects.
+
+**** *Query arguments*:
+ - *id*
+
+   Returns the data about the device with the specified id as a _single object_.
+
+ - *fields*
+
+   Same as for *get_data/*
+*** sort_data/
+"Sort" the collected data. Mainly useful for visualizations to avoid plotting every single data point.
+
+Returns a list of objects.
+
+**** *Query arguments*:
+ - *id* (/required/)
+
+   Get data collected by the device with the specified id.
+
+ - *count* (/required/)
+
+   Returns only the specified amount of data points starting from the latest.
+
+ - *every* (/required/)
+
+   Returns only every /n/-th data point, where /n/ is *every*.
+
+ - *fields*
+
+   Same as for *get_data/* and *get_devices/*
