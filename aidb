@@ -1,0 +1,210 @@
+<!-- -*- mode: php; -*- -->
+<?php
+// vim: ft=php sw=2 ts=2 et
+
+// CORS
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Headers: *");
+header("Access-Control-Allow-Methods: GET, POST");
+
+// Get HTTP Basic credentials
+if (isset($_SERVER["HTTP_AUTHORIZATION"])) {
+  list($_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW']) = explode(':' , base64_decode(substr($_SERVER['HTTP_AUTHORIZATION'], 6)));
+  $_SERVER["PHP_AUTH_USER"] = strtolower($_SERVER["PHP_AUTH_USER"]);
+}
+
+// Get input variables
+$api_vars = preg_split("/\//", ltrim($_SERVER["PATH_INFO"], '/'));
+parse_str($_SERVER["QUERY_STRING"], $query_vars);
+
+// Filter out empty variables
+$api_vars = array_filter($api_vars, static function($var){return $var !== NULL && $var !== "";} );
+
+// Connect to Postgres
+$config = include("./config/aidb.php");
+$pg_auth = "host=" . $config["host"] . " dbname=" . $config["dbname"] . " user=" . $config["user"] . " password=" . $config["password"];
+$dbconn = pg_connect($pg_auth)
+  or die("Could not connect to Postgres: " . pg_last_error());
+
+// Get only specified fields/columns from Postgres query
+// Safer than using user controlled data in the query
+function get_fields($result, $fields) {
+  if (isset($fields) && $fields !== "*") {
+    $fields = preg_split("/,/", $fields);
+
+    $out = array();
+    while ($row = pg_fetch_array($result)) {
+      $parsed_row = array();
+      foreach ($fields as $field) {
+        if (isset($row[$field])) {
+          $parsed_row[$field] = $row[$field];
+        }
+      }
+      $out[] = $parsed_row;
+    }
+  } else {
+    $out = pg_fetch_all($result);
+  }
+  return $out;
+}
+
+function unauthorized() {
+  http_response_code(401);
+  header("WWW-Authenticate: Basic realm=\"AIDB\"");
+  die("Unauthorized");
+}
+
+function array_item_null($array, $index) {
+  return isset($array[$index]) ? $array[$index] : null;
+}
+
+// Set $authorization to user id if authenticated
+$authorization = null;
+if (isset($_SERVER["PHP_AUTH_USER"]) && isset($_SERVER["PHP_AUTH_PW"])) {
+  pg_prepare($dbconn, "getid", "SELECT id FROM device WHERE mac = $1")
+    or die("Failed to prepare query: " . pg_last_error());
+  $result = pg_execute($dbconn, "getid", array($_SERVER["PHP_AUTH_USER"]));
+  $result = pg_fetch_array($result);
+
+  $id = $result["id"];
+  if (isset($id)) {
+    if ($_SERVER["PHP_AUTH_PW"] == $config["auth_password"]) {
+      $authorization = $id;
+    } else {
+      http_response_code(401);
+      die("Wrong credentials");
+    }
+  }
+}
+
+switch ($api_vars[0]) {
+case "add_data":
+  if (isset($authorization)) {
+    if(empty($_POST)) {
+      http_response_code(400);
+      die("Malformed request");
+    } else {
+      $volume = array_item_null($_POST, "volume");
+      $light = array_item_null($_POST, "light");
+      $co2 = array_item_null($_POST, "co2");
+      $temp = array_item_null($_POST, "temp");
+      $humidity = array_item_null($_POST, "humidity");
+
+      pg_prepare($dbconn, "add_data", "INSERT INTO data VALUES (default, $1, $2, $3, $4, $5, $6)")
+        or die("Failed to prepare query: " . pg_last_error());
+      pg_execute($dbconn, "add_data", array($authorization, $volume, $light, $co2, $temp, $humidity));
+      echo pg_last_error();
+    }
+  } else {
+    unauthorized();
+  }
+  break;
+
+case "dump":
+  print_r($_SERVER);
+  print_r($_POST);
+  break;
+
+case "get_data":
+  $type = "test";
+  switch($api_vars[1]) {
+  case "volume":
+    $type = "volume_data";
+    break;
+
+  case "light":
+    $type = "light_data";
+    break;
+
+  case "co2":
+    $type = "co2_data";
+    break;
+
+  case "temp":
+    $type = "temp_data";
+    break;
+
+  case "humidity":
+    $type = "humidity_data";
+    break;
+
+  case "":
+    $type = "data";
+    break;
+
+  default:
+    http_response_code(400);
+    die("Invalid column: " . $api_vars[1]);
+  }
+
+  // $type is safe
+  if(isset($query_vars["id"])) {
+    pg_prepare($dbconn, "get_data", "SELECT * FROM " . $type . " WHERE id = $1")
+      or die("Failed to prepare query: " . pg_last_error());
+    $result = pg_execute($dbconn, "get_data", array($query_vars["id"]));
+  } else {
+    pg_prepare($dbconn, "get_data", "SELECT * FROM " . $type)
+      or die("Failed to prepare query: " . pg_last_error());
+    $result = pg_execute($dbconn, "get_data", array());
+  }
+
+  echo json_encode(get_fields($result, $query_vars["fields"]));
+  break;
+
+case "get_devices":
+  if(isset($query_vars["id"])) {
+    pg_prepare($dbconn, "get_devices", "SELECT * FROM device WHERE id = $1")
+      or die("Failed to prepare query: " . pg_last_error());
+    $result = pg_execute($dbconn, "get_devices", array($query_vars["id"]));
+    echo json_encode(get_fields($result, $query_vars["fields"])[0]);
+  } else {
+    pg_prepare($dbconn, "get_devices", "SELECT * FROM device")
+      or die("Failed to prepare query: " . pg_last_error());
+    $result = pg_execute($dbconn, "get_devices", array());
+    echo json_encode(get_fields($result, $query_vars["fields"]));
+  }
+
+  break;
+
+case "sort_data":
+  $sql = "SELECT * FROM
+    (SELECT time, id, volume, light, co2, temp, humidity FROM
+      (SELECT *, ROW_NUMBER() OVER (ORDER BY time DESC) AS r
+        FROM data WHERE id = $3
+      ) AS t
+      WHERE t.r % $2 = 0
+      LIMIT $1
+    ) AS g
+    ORDER BY time ASC";
+
+  if(isset($query_vars["id"])) {
+    $id = intval($query_vars["id"]);
+  } else {
+    http_response_code(400);
+    die("No 'id' specified in query string");
+  }
+
+  if(isset($query_vars["count"])) {
+    $count = intval($query_vars["count"]);
+  } else {
+    http_response_code(400);
+    die("No 'count' specified in query string");
+  }
+
+  if(isset($query_vars["every"])) {
+    $every = intval($query_vars["every"]);
+  } else {
+    http_response_code(400);
+    die("No 'every' specified in query string");
+  }
+
+  pg_prepare($dbconn, "sort_data", $sql);
+  $result = pg_execute($dbconn, "sort_data", array($count, $every, $id));
+  echo json_encode(get_fields($result, $query_vars["fields"]));
+  break;
+
+default:
+  http_response_code(400);
+  die("Invalid method: " . $api_vars[0]);
+}
+?>
