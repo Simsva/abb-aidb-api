@@ -4,6 +4,8 @@
 
 An API for accessing data collected using [[https://github.com/Simsva/esp8266-data-collection-2][esp8266-data-collection-2]]
 
+See [[./nginx_example.conf][nginx_example.conf]] for information on running the API.
+
 * Basic information
 ** *API arguments*:
 Arguments provided in the API URL separated by slashes.
